@@ -24,11 +24,24 @@ int main(void) {
     for (size_t i = 0; i < 16000; i += 100) sax_tone(b+i, 100, 440, &pb, i, 16000);
     assert(memcmp(a, b, sizeof(a)) == 0);
     assert(a[0] == 0 && a[15999] == 0);
-    int crossings = 0;
+    assert(sax_volume_step(80, true) == 90);
+    assert(sax_volume_step(90, true) == 100);
+    assert(sax_volume_step(100, true) == 100);
+    assert(sax_volume_step(40, false) == 40);
+    assert(sax_volume_step(80, false) == 70);
+    for (int v = 50; v <= 90; v += 10)
+        assert(sax_volume_step(sax_volume_step(v, true), false) == v);
+    int crossings = 0, peak = 0;
+    double energy = 0;
     for (int i = 1; i < 16000; ++i) {
-        assert(abs(a[i]) <= 5000);
+        assert(abs(a[i]) <= SAX_TONE_PEAK);
+        if (abs(a[i]) > peak) peak = abs(a[i]);
+        energy += (double)a[i] * a[i];
         if (a[i-1] <= 0 && a[i] > 0) ++crossings;
     }
     assert(crossings >= 439 && crossings <= 441);
+    assert(peak >= 15900 && peak <= 16000);
+    double rms = sqrt(energy / 16000);
+    assert(rms > 11000 && rms < 11500); /* sine energy including fades */
     puts("Sax music tests: PASS");
 }

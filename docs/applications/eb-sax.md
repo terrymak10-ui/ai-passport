@@ -9,9 +9,10 @@ The hardware BSP and default partitions are unchanged. No radio stack is started
 ## Controls and display
 
 - UP selects the previous lower note; DOWN selects the next higher note. Ends clamp.
-- OK plays a one-second sine reference at 80/100 codec volume. Start quietly and
+- OK plays a one-second sine reference at the selected codec volume (default 80/100). Start quietly and
   keep the speaker away from ears. A double click is treated as one action.
 - Hold OK toggles WRITTEN / CONCERT. Written is the startup default.
+- Hold UP / DOWN to raise / lower codec volume by 10, clamped to 40–100. Release before each next step. Volume is shown on screen, resets to 80 at startup, and is locked during playback.
 - Playback temporarily locks note selection/mode changes, so displayed and played
   pitches remain consistent. Buttons resume when queued PCM has drained.
 - After 60 seconds idle the backlight dims to 5%; a key restores brightness.
@@ -42,7 +43,7 @@ practice-statistics persistence yet. Queues and workers live for application
 lifetime; the app has one permanent screen.
 
 `tests/test_sax_music.c` checks transposition examples, pitch frequency, note
-bounds/order, key data, waveform amplitude, phase continuity across different
+bounds/order, key data, waveform peak/RMS, bounded volume steps, phase continuity across different
 block sizes, fade endpoints, and A4 zero-crossing count. It is part of
 `tools/validate.sh`. Host tests do not establish acoustic accuracy.
 
@@ -72,3 +73,5 @@ explicit approval for the exact build; a merged image at 0x0 can reset NVS.
 Source publication on the feature branch is authorized; merging, releases, and device flashing are not.
 
 Audio follow-up: the initial 45/100 codec setting mapped to approximately -27.5 dB before board gain compensation. The test revision uses the baseline audio demo's 80/100 setting (approximately -10 dB), leaving PCM amplitude and fades unchanged. This raises nominal output by 17.5 dB but is not proof of audible hardware output. Serial logs report reference frequency, format setup and PCM completion; successful writes do not prove speaker output. On the initial device build, UI rendering and a completed playback status were observed, but sound was not confirmed. Retest acoustic output with the new revision.
+
+Second audio follow-up: the user confirmed C6 is audible only very close to the ear with the 80/100 build. PCM sine peak is now 16000 instead of 5000 (nominal +10.1 dB, 16-bit headroom retained); 10 ms fades are unchanged. Volume is adjustable up to the existing public API limit of 100. Do not alter board gain assumptions or codec registers to compensate without measurements. Start playback away from ears, then increase volume one step at a time if needed. Actual loudness, distortion, low-frequency response and usability remain unverified. A successful write/status is not acoustic acceptance.

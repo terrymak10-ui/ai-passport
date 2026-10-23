@@ -13,7 +13,7 @@
 #include <stdio.h>
 
 typedef struct { bsp_btn_t key; bsp_btn_ev_t event; } input_t;
-typedef struct { int midi; unsigned generation; } tone_request_t;
+typedef struct { int midi; unsigned generation; uint8_t volume; } tone_request_t;
 typedef struct { unsigned generation; bool ok; } tone_result_t;
 static QueueHandle_t inputs, tones, results;
 static lv_obj_t *note_label, *other_label, *frequency_label, *status_label, *mode_label;
@@ -22,6 +22,7 @@ static bool audio_ok, concert;
 static size_t selected;
 static unsigned generation;
 static bool playing;
+static uint8_t volume = SAX_VOLUME_DEFAULT;
 static int64_t last_activity;
 static bool dimmed;
 static const char *TAG = "sax";
@@ -64,7 +65,9 @@ static void refresh(void) {
     for (int i = 0; i < 6; ++i) fill(keys[i], (n->keys >> i) & 1);
     fill(octave_key, n->octave);
     fill(low_key, n->low_c);
-    lv_label_set_text(status_label, !audio_ok ? "Audio unavailable" : playing ? "Playing reference..." : "OK: hear reference (80)");
+    if (!audio_ok) lv_label_set_text(status_label, "Audio unavailable");
+    else lv_label_set_text_fmt(status_label, "%s | VOL %u",
+                               playing ? "Playing..." : "OK: play", (unsigned)volume);
 }
 static void build_ui(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
@@ -90,7 +93,7 @@ static void build_ui(void) {
     label(screen, "Oct", 190, 184, 35);
     label(screen, "C", 201, 230, 20);
     status_label = label(screen, "", 18, 254, 210);
-    label(screen, "UP/DOWN: note\nHold OK: written / concert", 18, 279, 210);
+    label(screen, "UP/DOWN: note | OK: play\nHold: UP/DN vol, OK mode", 18, 279, 210);
     lv_screen_load(screen);
     refresh();
 }
@@ -106,11 +109,10 @@ static void audio_worker(void *arg) {
     for (;;) {
         if (xQueueReceive(tones, &request, portMAX_DELAY) != pdTRUE) continue;
         bool ok = bsp_audio_set_format(SAX_SAMPLE_RATE, 16, 1) == ESP_OK;
-        /* codec-dev maps 45 to about -27.5 dB before board gain compensation.
-         * Match the BSP demo's 80 setting; keep PCM amplitude and fades bounded. */
-        bsp_audio_set_volume(80);
-        ESP_LOGI(TAG, "Reference start midi=%d hz=%.2f volume=80 format_ok=%d",
-                 request.midi, sax_frequency(request.midi), ok);
+        bsp_audio_set_volume(request.volume);
+        ESP_LOGI(TAG, "Reference start midi=%d hz=%.2f volume=%u peak=%d format_ok=%d",
+                 request.midi, sax_frequency(request.midi), (unsigned)request.volume,
+                 SAX_TONE_PEAK, ok);
         uint32_t phase = 0;
         size_t total = SAX_SAMPLE_RATE; /* one second, fixed shared format */
         for (size_t at = 0; ok && at < total; at += 256) {
@@ -154,10 +156,14 @@ void app_main(void) {
                     if (input.key == BSP_BTN_UP && selected > 0) --selected;
                     else if (input.key == BSP_BTN_DOWN && selected + 1 < SAX_NOTE_COUNT) ++selected;
                     else if (input.key == BSP_BTN_OK && audio_ok) {
-                        tone_request_t r = {sax_note(selected)->written - 9, ++generation};
+                        tone_request_t r = {sax_note(selected)->written - 9, ++generation, volume};
                         playing = xQueueSend(tones, &r, 0) == pdTRUE;
                     }
-                } else if (input.event == BSP_BTN_LONG && input.key == BSP_BTN_OK) concert = !concert;
+                } else if (input.event == BSP_BTN_LONG) {
+                    if (input.key == BSP_BTN_OK) concert = !concert;
+                    else if (input.key == BSP_BTN_UP) volume = sax_volume_step(volume, true);
+                    else if (input.key == BSP_BTN_DOWN) volume = sax_volume_step(volume, false);
+                }
                 if (bsp_lvgl_lock(100)) { refresh(); bsp_lvgl_unlock(); }
             }
         }

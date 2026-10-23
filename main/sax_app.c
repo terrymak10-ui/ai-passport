@@ -17,9 +17,17 @@ typedef struct { int midi; unsigned generation; uint8_t volume; } tone_request_t
 typedef struct { unsigned generation; bool ok; } tone_result_t;
 static QueueHandle_t inputs, tones, results;
 static lv_obj_t *note_label, *other_label, *frequency_label, *status_label, *mode_label;
-static lv_obj_t *keys[6], *octave_key, *low_key, *battery_label;
+static lv_obj_t *keys[6], *aux_keys[SAX_AUX_COUNT], *battery_label;
+static lv_obj_t *alias_label, *notice_label;
+typedef struct { uint16_t mask; const char *name; } aux_key_t;
+/* Grouped by operation: thumb/LH pinky, RH low/side, then upper register. */
+static const aux_key_t aux_map[SAX_AUX_COUNT] = {
+    {SAX_OCT, "Oct"}, {SAX_GS, "G#"}, {SAX_LCS, "LC#"}, {SAX_LB, "LB"}, {SAX_LBB, "LBb"},
+    {SAX_LC, "LC"}, {SAX_LEB, "LEb"}, {SAX_SBB, "SBb"}, {SAX_PD, "PD"}, {SAX_PEB, "PEb"},
+    {SAX_PF, "PF"}, {SAX_SE, "SE"}, {SAX_HFS, "HF#"},
+};
 static bool audio_ok, concert;
-static size_t selected;
+static size_t selected = 72 - SAX_WRITTEN_MIN; /* C5, above the weakest bass range */
 static unsigned generation;
 static sax_player_state_t player = SAX_STOPPED;
 static TaskHandle_t audio_task;
@@ -37,10 +45,14 @@ static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y, int wid
     return o;
 }
 static lv_obj_t *key_dot(lv_obj_t *parent, int x, int y, int size) {
-    lv_obj_t *o = lv_obj_create(parent);
+    /* One styled label per key, avoiding a container+label pair on no-PSRAM C3. */
+    lv_obj_t *o = lv_label_create(parent);
+    lv_label_set_text(o, "");
+    lv_obj_set_style_text_align(o, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(o, x, y);
     lv_obj_set_size(o, size, size);
     lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_all(o, 0, 0);
     lv_obj_set_style_border_width(o, 2, 0);
     lv_obj_set_style_border_color(o, lv_color_hex(0x62D8C0), 0);
     lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
@@ -49,14 +61,18 @@ static lv_obj_t *key_dot(lv_obj_t *parent, int x, int y, int size) {
 static void fill(lv_obj_t *o, bool closed) {
     lv_obj_set_style_bg_color(o, lv_color_hex(closed ? 0x62D8C0 : 0x172333), 0);
     lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(o, lv_color_hex(closed ? 0x101925 : 0xE7EDF5), 0);
 }
 /* Called only under the BSP LVGL lock. Fingering always follows written pitch. */
 static void refresh(void) {
     const sax_note_t *n = sax_note(selected);
-    char written[12], sounding[12], text[64];
+    char written[12], sounding[12], text[64], alias[12];
     sax_note_name(n->written, written, sizeof(written));
     sax_note_name(n->written - 9, sounding, sizeof(sounding));
     lv_label_set_text(note_label, concert ? sounding : written);
+    sax_note_alias(concert ? n->written - 9 : n->written, alias, sizeof(alias));
+    lv_label_set_text(alias_label, alias);
+    lv_label_set_text(notice_label, n->written == 90 ? "Needs high F# key" : "Filled=press  Open=release");
     lv_label_set_text(mode_label, concert ? "CONCERT / Eb ALTO" : "WRITTEN / Eb ALTO");
     snprintf(text, sizeof(text), "%s %s  |  %u / %u", concert ? "Written" : "Concert",
              concert ? written : sounding, (unsigned)selected + 1, SAX_NOTE_COUNT);
@@ -64,8 +80,8 @@ static void refresh(void) {
     snprintf(text, sizeof(text), "%.2f Hz   A4 = 440", sax_frequency(n->written - 9));
     lv_label_set_text(frequency_label, text);
     for (int i = 0; i < 6; ++i) fill(keys[i], (n->keys >> i) & 1);
-    fill(octave_key, n->octave);
-    fill(low_key, n->low_c);
+    for (int i = 0; i < SAX_AUX_COUNT; ++i)
+        fill(aux_keys[i], (n->aux & aux_map[i].mask) != 0);
     if (!audio_ok) lv_label_set_text(status_label, "Audio unavailable");
     else lv_label_set_text_fmt(status_label, "%s | VOL %u",
                                player == SAX_STOPPING ? "Stopping..." : player == SAX_PLAYING ? "OK: stop" : "OK: play", (unsigned)volume);
@@ -75,26 +91,33 @@ static void build_ui(void) {
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x101925), 0);
     lv_obj_set_style_text_font(screen, &lv_font_montserrat_14, 0);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-    label(screen, "SAX / PASSPORT", 18, 15, 150);
-    battery_label = label(screen, "--%", 177, 15, 45);
-    mode_label = label(screen, "", 18, 43, 210);
-    note_label = label(screen, "", 18, 66, 204);
+    label(screen, "SAX / PASSPORT", 18, 14, 150);
+    battery_label = label(screen, "--%", 177, 14, 45);
+    mode_label = label(screen, "", 18, 37, 210);
+    note_label = label(screen, "", 18, 56, 140);
     lv_obj_set_style_text_font(note_label, &lv_font_montserrat_40, 0);
-    other_label = label(screen, "", 18, 113, 210);
-    frequency_label = label(screen, "", 18, 134, 210);
-    label(screen, "LH", 27, 160, 35);
-    label(screen, "RH", 27, 206, 35);
+    alias_label = label(screen, "", 161, 70, 65);
+    other_label = label(screen, "", 18, 103, 210);
+    frequency_label = label(screen, "", 18, 123, 210);
+    label(screen, "LH", 18, 151, 30);
+    label(screen, "RH", 18, 179, 30);
+    label(screen, "1 Index\n2 Middle\n3 Ring", 149, 150, 79);
     for (int i = 0; i < 6; ++i) {
-        keys[i] = key_dot(screen, 72 + (i % 3) * 39, i < 3 ? 158 : 204, 28);
+        keys[i] = key_dot(screen, 54 + (i % 3) * 30, i < 3 ? 148 : 176, 23);
         char digit[2] = {(char)('1' + i % 3), 0};
-        label(screen, digit, 82 + (i % 3) * 39, i < 3 ? 188 : 234, 16);
+        lv_label_set_text(keys[i], digit);
+        lv_obj_set_style_pad_top(keys[i], 1, 0);
     }
-    octave_key = key_dot(screen, 196, 162, 16);
-    low_key = key_dot(screen, 196, 208, 16);
-    label(screen, "Oct", 190, 184, 35);
-    label(screen, "C", 201, 230, 20);
-    status_label = label(screen, "", 18, 254, 210);
-    label(screen, "UP/DOWN: note, OK: sound\nHold: UP/DN vol, OK mode", 18, 279, 210);
+    for (int i = 0; i < SAX_AUX_COUNT; ++i) {
+        lv_obj_t *key = key_dot(screen, 14 + (i % 5) * 43, 205 + (i / 5) * 21, 39);
+        lv_obj_set_size(key, 39, 20);
+        lv_obj_set_style_radius(key, 5, 0);
+        lv_label_set_text(key, aux_map[i].name);
+        aux_keys[i] = key;
+    }
+    notice_label = label(screen, "", 18, 269, 210);
+    status_label = label(screen, "", 18, 286, 210);
+    label(screen, "Hold: UP/DN vol, OK mode", 21, 302, 205);
     lv_screen_load(screen);
     refresh();
 }
@@ -111,9 +134,9 @@ static void audio_worker(void *arg) {
         if (xQueueReceive(tones, &request, portMAX_DELAY) != pdTRUE) continue;
         bool ok = bsp_audio_set_format(SAX_SAMPLE_RATE, 16, 1) == ESP_OK;
         bsp_audio_set_volume(request.volume);
-        ESP_LOGI(TAG, "Reference start midi=%d hz=%.2f volume=%u peak=%d format_ok=%d",
+        ESP_LOGI(TAG, "Reference start midi=%d hz=%.2f volume=%u peak_cap=%d rich=%u format_ok=%d",
                  request.midi, sax_frequency(request.midi), (unsigned)request.volume,
-                 SAX_TONE_PEAK, ok);
+                 SAX_TONE_PEAK, sax_tone_richness(sax_frequency(request.midi)), ok);
         sax_stream_t stream = {0};
         bool started = false;
         const double hz = sax_frequency(request.midi);

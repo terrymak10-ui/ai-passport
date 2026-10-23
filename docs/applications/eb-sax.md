@@ -1,78 +1,131 @@
 **English** · [简体中文](eb-sax.zh_CN.md)
 
-# Eb Alto Saxophone — first increment
+# Eb alto saxophone practice app
 
-Offline reference-note and fingering browser, based on main commit
+Offline ESP32-C3 / 8 MB Flash / no-PSRAM application, based on main commit
 `3d685a90bdb96dd8526d84edde1e63fec25b460e`. Entry: `main/sax_app.c`.
-The hardware BSP and default partitions are unchanged. No radio stack is started.
+The BSP, GPIO map and default partitions are unchanged. No radio stack starts.
 
-## Controls and display
+## Notes and controls
 
-- UP selects the previous lower note; DOWN selects the next higher note. Ends clamp.
-- OK starts a continuous sine reference; press OK again to stop. Playback uses the selected codec volume (default 80/100). Start quietly and
-  keep the speaker away from ears. A double click is treated as one action.
-- Hold OK toggles WRITTEN / CONCERT. Written is the startup default.
-- Hold UP / DOWN to raise / lower codec volume by 10, clamped to 40–100. Release before each next step. Volume is shown on screen, resets to 80 at startup, and is locked during playback.
-- Playback locks note selection, volume and mode changes so display and sound remain consistent. OK remains active to stop. Wait for STOPPING to finish before selecting another note or starting again; queued PCM is drained after a 10 ms release. Stop response time requires device measurement.
-- After 60 seconds idle the backlight dims to 5%; a key restores brightness.
-- The top-right battery displays `--%` if unavailable.
+The browser now covers all **33 consecutive semitones, written Bb3–F#6**
+(MIDI 58–90). Startup selects written C5. A4=440 Hz; sounding MIDI = written MIDI - 9.
+The concert range is Db3–A5, approximately 138.59–880 Hz. Written C5 plays concert
+Eb4 at 311.12698 Hz. Display defaults to WRITTEN; changing to CONCERT does not
+change the fingering or playback frequency.
 
-Fifteen C-major natural notes, written C4 through C6, are included. This is a
-limited initial note set, not a chromatic fingering chart. Six circles represent
-LH and RH index/middle/ring fingers from left to right. Filled means closed;
-outline means open. Oct is the thumb octave key; C is the right little-finger
-low-C key. The fingering always follows written pitch even in CONCERT mode.
-Other auxiliary keys remain released. This basic conventional fingering table
-is authored for this app; alternate fingerings and instrument-specific mechanisms
-are outside this increment. A saxophone player must check the chart on hardware.
+- Short UP/DOWN selects a lower/higher semitone, clamped at both ends.
+- Short OK toggles continuous play/stop. A double click is treated as one action.
+- Hold OK switches written/concert display while stopped.
+- Hold UP/DOWN changes codec volume in steps of 10 within 40–100. Release before
+  each step. Startup volume is now **90** (previously 80); it is not persisted.
+- Note, mode and volume changes are locked during playback. OK remains active to
+  stop; wait for STOPPING to finish before starting or changing settings.
+- Idle backlight dims after 60 seconds when stopped; keys restore brightness.
+- Battery appears top-right or `--%` if unavailable. UI remains English/ASCII.
 
-Internal reference pitch is A4=440 Hz. Sounding MIDI = written MIDI - 9.
-Written C5 therefore plays Eb4 (311.12698 Hz), never concert C5. Names use ASCII
-accidentals (Eb, F#) and scientific pitch octaves. The interface is English;
-Traditional Chinese font integration remains pending.
+Flat names use ASCII b; F# uses #. The upper-right alias shows the enharmonic
+spelling (for example Db4 / C#4, F#4 / Gb4). Numbering uses scientific pitch octaves.
 
-## Architecture and tests
+## Fingering diagram
 
-`main/sax_music.c` is hardware-independent: note data, frequency/name conversion,
-and a phase-continuous sine oscillator with a Flash lookup table and 10 ms fades.
-No per-sample floating-point trigonometry is used. A dedicated audio task owns
-blocking PCM writes. Input callbacks only enqueue, and UI access holds the BSP
-LVGL lock. PCM uses a 512-byte worker buffer. There is no recording buffer or
-practice-statistics persistence yet. Queues and workers live for application
-lifetime; the app has one permanent screen.
+Main circles are LH and RH index/middle/ring fingers, numbered 1–3 from left to
+right. Filled means press; outline means release. Auxiliary labeled indicators
+show **player-operated touches**, not all mechanically coupled tone holes.
 
-`tests/test_sax_music.c` checks transposition examples, pitch frequency, note
-bounds/order, key data, waveform peak/RMS, bounded volume steps, phase continuity across different
-block sizes, fade endpoints, play/stop state transitions, continuous streaming beyond one second, and A4 zero-crossing count. It is part of
-`tools/validate.sh`. Host tests do not establish acoustic accuracy.
+| Label | Meaning / hand |
+| --- | --- |
+| Oct | Left-thumb octave key |
+| G# | Left-pinky G# key |
+| LC# / LB / LBb | Left-pinky low C# / B / Bb keys |
+| LC / LEb | Right-pinky low C / Eb keys |
+| SBb | Right-hand side Bb key, not LH bis Bb |
+| PD / PEb / PF | Left-hand palm D / Eb / F keys |
+| SE | Right-hand upper side E key |
+| HF# | Dedicated right-hand high F# key |
 
-Run the complete gate in ESP-IDF 5.5.3:
+Choose one primary common fingering per note: side Bb for Bb4/Bb5, RH middle
+finger for F#4/F#5, palm keys for D6 and above. F#6 uses the high-F# key; its
+screen explicitly says **Needs high F# key**. A horn without that key needs an
+instrument-appropriate alternate, which is not presented as universal here.
+Other alternate, front-key, bis and altissimo fingerings are outside this version.
+
+Sources used to cross-check key combinations (no source graphics copied):
+
+- [Yamaha acoustic saxophone fingering guide](https://www.yamaha.com/en/musical_instrument_guide/saxophone/play/play002.html).
+- Timothy Reichard's Woodwind Fingering Guide: [first octave](https://www.wfg.woodwind.org/sax/sax_bas_1.html), [second octave](https://www.wfg.woodwind.org/sax/sax_bas_2.html), [key scheme](https://www.wfg.woodwind.org/sax/sax_fing.html), and [high F# variants](https://www.wfg.woodwind.org/sax/sax_alt_4.html).
+- [NoteAtlas high F# primary key combination](https://www.noteatlas.org/instruments/alto-sax/notes/high-f-sharp/).
+
+These are reference fingerings, not a measured guarantee for the user's horn.
+A saxophone teacher/player should check all 33 indicators on the actual device.
+
+## Low-note playback profile
+
+Earlier hardware tests found C6 audible but low notes very weak even at VOL 100.
+This version changes timbre rather than attempting unbounded gain:
+
+- At sounding frequencies up to 311.13 Hz (written C5 and below), use the
+  fundamental plus its second/third/fourth harmonics, with weights
+  `1 : 0.65 : 0.45 : 0.30`, normalized to a PCM peak of **20000**.
+- Crossfade toward a pure sine from 311.13 to 440 Hz. At and above concert A4
+  (written F#5), retain the **16000**-peak sine.
+- Every added partial is an integer multiple of the correct concert fundamental;
+  no octave substitution is used. This reference is a synthesized rich tone,
+  not a recording or simulation of a saxophone.
+- A higher startup volume (90) is 5 dB above the previous 80 on the dependency's
+  default volume curve, before board gain compensation. Actual SPL is unmeasured.
+- Table interpolation and profile crossfade are convex. The generated PCM never
+  exceeds +/-20000, with no hard clipping; 10 ms start/stop fades remain.
+
+Both tables are constant Flash data; the additional table is 514 bytes. Rendering
+uses integer table interpolation per sample, not per-sample trigonometry. The
+512-byte PCM worker buffer, 24 KiB LVGL pool and LCD DMA configuration are unchanged.
+Each diagram key is one styled label to reduce UI object/style overhead.
+
+Harmonics should improve audibility on a small speaker, but improvement is an
+engineering hypothesis until retested. Digital peak bounds do not establish
+analog headroom, speaker response, normal-room loudness, power or thermal safety.
+Start with the speaker away from ears, then adjust volume gradually. Do not
+assume VOL 100 or a successful PCM write means the acoustic output is acceptable.
+
+## Playback architecture and verification
+
+`main/sax_music.c` owns hardware-independent notes, naming, frequency conversion,
+volume steps, waveform profiles, envelope and play/stop state. A dedicated worker
+owns PCM I/O. Input callbacks enqueue only; UI objects use the BSP LVGL lock.
+STOPPED/PLAYING/STOPPING states and generation-tagged stop notifications prevent
+stale stops from cancelling a newer playback. Phase survives block boundaries;
+the envelope counter saturates after attack. Stop emits a 10 ms release and
+silence drain before acknowledgement. Actual stop latency is unmeasured.
+
+`tests/test_sax_music.c` checks all 33 consecutive MIDI notes, transposition,
+octave-related main/aux fingerings, lower/palm/high-F# cases, aliases, semitone
+frequency ratios, volume bounds, continuous playback, fades, and peak/RMS bounds.
+Spectral tests check that low-tone fundamental and harmonics have the intended
+ratios and that concert A4 remains a pure tone. Host checks cannot validate
+actual speaker sound or physical fingering ergonomics.
 
 ```sh
 ./tools/validate.sh
 ```
 
-## Pending acceptance and later increments
+## Hardware acceptance and remaining work
 
-On the device verify boot, every note and key indicator, concert switching,
-clamped navigation, sound quality/pitch with an independent tuner, repeated
-playback, battery fallback, idle dimming, and no watchdog/reboot. Observe minimum
-heap and largest free block during repeated playback. No physical checks have
-been performed for this application yet.
+Current version: **device tests not run**. Verify all 33 notes/auxiliary labels,
+readability/clipping, high-F# warning, audible Bb3/B3/C4/B4/C5/C6 at a normal
+listening distance, timbre/pitch with an independent tuner, distortion, continuous
+play/stop/restart, battery fallback, idle dimming, minimum heap/largest free block,
+watchdogs, power and temperature during longer playback. If low notes remain
+inaudible, investigate the actual speaker/amp path instead of assuming more gain.
 
-Still pending: microphone quality diagnostics, YIN tuner, cents display,
-metronome, scales/follow-along, long-tone training, dated practice statistics,
-chromatic/alternate fingerings, Traditional Chinese fonts, and automatic sleep.
-No ±1-cent, 50-ms, or 1-ms performance claim is made. The default partition has
-no OTA or filesystem. Future daily statistics require manual date setup or an
-appropriate clock source after complete power loss.
+Previous versions: user confirmed screen and PCM-completion logs; VOL 100 improved
+upper notes but C5/B4 and below remained weak. This is not acceptance of the new
+33-note/rich-tone version.
 
-Build outputs must pass the shared merge/layout verifier. Do not flash without
-explicit approval for the exact build; a merged image at 0x0 can reset NVS.
-Source publication on the feature branch is authorized; merging, releases, and device flashing are not.
-
-Audio follow-up: the initial 45/100 codec setting mapped to approximately -27.5 dB before board gain compensation. The test revision uses the baseline audio demo's 80/100 setting (approximately -10 dB), leaving PCM amplitude and fades unchanged. This raises nominal output by 17.5 dB but is not proof of audible hardware output. Serial logs report reference frequency, format setup and PCM completion; successful writes do not prove speaker output. On the initial device build, UI rendering and a completed playback status were observed, but sound was not confirmed. Retest acoustic output with the new revision.
-
-Second audio follow-up: the user confirmed C6 is audible only very close to the ear with the 80/100 build. PCM sine peak is now 16000 instead of 5000 (nominal +10.1 dB, 16-bit headroom retained); 10 ms fades are unchanged. Volume is adjustable up to the existing public API limit of 100. Do not alter board gain assumptions or codec registers to compensate without measurements. Start playback away from ears, then increase volume one step at a time if needed. Actual loudness, distortion, low-frequency response and usability remain unverified. A successful write/status is not acoustic acceptance.
-
-Continuous playback: OK toggles play/stop with explicit STOPPED/PLAYING/STOPPING states. The audio worker checks a generation-tagged stop notification between 256-sample blocks, keeping stop independent of the start queue. A stop arriving before the worker starts is retained; stale stops cannot cancel a later playback. Phase and attack position persist across blocks, without a one-second loop seam or repeated fade. End playback before changing note, volume or display mode. The backlight does not idle-dim during playback. Continuous audio power, thermal behavior and stop latency need hardware acceptance.
+Pending: microphone/YIN/cents, metronome, scales/follow-along, long-tone training,
+dated statistics, alternate/altissimo fingerings, Traditional Chinese fonts and
+automatic sleep. No +/-1-cent, 50-ms or 1-ms performance claim is made. Default
+partitions have no OTA/filesystem; dated records after power loss need a suitable
+clock source or manual date. Publication is limited to the authorized feature
+branch/draft PR; no merge, release or device flash is automatic. A merged image
+at 0x0 may reset NVS; confirm the exact build and target before every flash.

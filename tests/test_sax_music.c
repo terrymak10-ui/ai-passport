@@ -12,13 +12,39 @@ int main(void) {
     assert(sax_note(SAX_NOTE_COUNT) == NULL);
     for (size_t i = 0; i < SAX_NOTE_COUNT; ++i) {
         const sax_note_t *n = sax_note(i);
-        assert(n->written >= 60 && n->written <= 84);
+        assert(n->written == SAX_WRITTEN_MIN + (int)i);
+        assert((n->aux & ~SAX_AUX_ALL) == 0);
+        if (i) assert(fabs(sax_frequency(n->written - 9) /
+                           sax_frequency(sax_note(i-1)->written - 9) - exp2(1.0/12)) < 1e-12);
         assert((n->keys & ~63) == 0);
         if (i) assert(n->written > sax_note(i-1)->written);
     }
-    assert(sax_note(0)->low_c && sax_note(0)->keys == 63);
-    assert(sax_note(7)->keys == 2 && !sax_note(7)->octave);
-    assert(sax_note(8)->octave && sax_note(8)->keys == 63);
+    assert(sax_note(0)->written == 58 && sax_note(32)->written == 90);
+    assert(sax_note(0)->keys == 63 && sax_note(0)->aux == (SAX_LC | SAX_LBB));
+    assert(sax_note(1)->aux == (SAX_LC | SAX_LB));
+    assert(sax_note(2)->aux == SAX_LC);
+    assert(sax_note(3)->aux == (SAX_LC | SAX_LCS));
+    assert(sax_note(8)->keys == 23 && !sax_note(8)->aux); /* RH middle F# */
+    assert(sax_note(12)->keys == 3 && sax_note(12)->aux == SAX_SBB);
+    assert(sax_note(14)->keys == 2 && !sax_note(14)->aux); /* C5 */
+    assert(sax_note(15)->keys == 0 && !sax_note(15)->aux); /* Db5 */
+    for (size_t i = 4; i <= 15; ++i) {
+        assert(sax_note(i+12)->keys == sax_note(i)->keys);
+        assert(sax_note(i+12)->aux == (sax_note(i)->aux | SAX_OCT));
+    }
+    assert(sax_note(28)->aux == (SAX_OCT | SAX_PD));
+    assert(sax_note(29)->aux == (SAX_OCT | SAX_PD | SAX_PEB));
+    assert(sax_note(30)->aux == (SAX_OCT | SAX_PD | SAX_PEB | SAX_SE));
+    assert(sax_note(31)->aux == (SAX_OCT | SAX_PD | SAX_PEB | SAX_PF | SAX_SE));
+    assert(sax_note(32)->aux == (sax_note(31)->aux | SAX_HFS));
+    assert(fabs(sax_frequency(sax_note(0)->written-9) - 138.5913155) < 1e-6);
+    assert(fabs(sax_frequency(sax_note(32)->written-9) - 880) < 1e-9);
+    sax_note_alias(61, name, sizeof(name)); assert(strcmp(name, "C#4") == 0);
+    sax_note_alias(66, name, sizeof(name)); assert(strcmp(name, "Gb4") == 0);
+    sax_note_alias(60, name, sizeof(name)); assert(name[0] == 0);
+    assert(sax_tone_richness(138.59) == 256 && sax_tone_richness(311.13) == 256);
+    assert(sax_tone_richness(440) == 0 && sax_tone_richness(880) == 0);
+    assert(sax_tone_richness(350) > sax_tone_richness(400));
     int16_t a[16000], b[16000]; uint32_t pa = 0, pb = 0;
     sax_tone(a, 16000, 440, &pa, 0, 16000);
     for (size_t i = 0; i < 16000; i += 100) sax_tone(b+i, 100, 440, &pb, i, 16000);
@@ -65,10 +91,53 @@ int main(void) {
         assert(abs(continuous[i]) <= SAX_TONE_PEAK);
         tail_energy += (double)continuous[i] * continuous[i];
     }
-    assert(sqrt(tail_energy / 384) > 10000);
+    assert(sqrt(tail_energy / 384) > 8000);
     sax_stream_release(&chunks, release, 311.1269837);
     assert(release[SAX_RELEASE_SAMPLES-1] == 0);
     for (int i = 0; i < SAX_RELEASE_SAMPLES; ++i)
         assert(abs(release[i]) <= SAX_TONE_PEAK);
+    /* Every playable pitch: no out-of-range PCM, no repeated attack or phase
+     * seam, and a release ending at zero. Test actual rendered samples. */
+    for (size_t note = 0; note < SAX_NOTE_COUNT; ++note) {
+        double hz = sax_frequency(sax_note(note)->written - 9);
+        sax_stream_t stream = {0};
+        sax_stream_render(&stream, a, 16000, hz);
+        double note_energy = 0;
+        for (size_t i = 0; i < 16000; ++i) {
+            assert(abs(a[i]) <= SAX_TONE_PEAK);
+            note_energy += (double)a[i] * a[i];
+        }
+        /* Lowest profile fundamental is ~11038; RMS stays above 7500
+         * after the short attack, even in the profile crossfade. */
+        assert(sqrt(note_energy / 16000) > 7500);
+        sax_stream_release(&stream, release, hz);
+        assert(release[SAX_RELEASE_SAMPLES-1] == 0);
+    }
+    /* Spectral regression: keep the fundamental, add controlled harmonics
+     * below C5 sounding pitch, retain pure A4 at the high end. */
+    double profiles[] = {250, 440};
+    for (size_t profile = 0; profile < 2; ++profile) {
+        double hz = profiles[profile], amplitudes[4];
+        sax_stream_t stream = {0};
+        int16_t warm[256];
+        sax_stream_render(&stream, warm, 256, hz);
+        sax_stream_render(&stream, a, 16000, hz);
+        for (int harmonic = 1; harmonic <= 4; ++harmonic) {
+            double real = 0, imag = 0;
+            for (int i = 0; i < 16000; ++i) {
+                double angle = 6.283185307179586 * hz * harmonic * i / SAX_SAMPLE_RATE;
+                real += a[i] * cos(angle); imag += a[i] * sin(angle);
+            }
+            amplitudes[harmonic-1] = 2 * hypot(real, imag) / 16000;
+        }
+        assert(amplitudes[0] > 9000);
+        if (profile == 0) {
+            const double ratios[] = {1, .65, .45, .30};
+            for (int h = 1; h < 4; ++h)
+                assert(fabs(amplitudes[h] / amplitudes[0] - ratios[h]) < .01);
+        } else {
+            for (int h = 1; h < 4; ++h) assert(amplitudes[h] < amplitudes[0] * .001);
+        }
+    }
     puts("Sax music tests: PASS");
 }

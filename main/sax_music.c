@@ -1,12 +1,44 @@
 #include "sax_music.h"
 #include <math.h>
 #include <stdio.h>
+/* Primary key combinations cross-checked against WFG basic charts and Yamaha.
+ * Names denote touches the player presses, not mechanically coupled tone holes.
+ * Bb4/Bb5 use side Bb; F#4/F#5 use RH middle; F#6 requires a high-F# key.
+ * References and interpretation are recorded in docs/applications/eb-sax.md. */
 static const sax_note_t notes[SAX_NOTE_COUNT] = {
-    {60,63,false,true}, {62,63,false,false}, {64,31,false,false},
-    {65,15,false,false}, {67,7,false,false}, {69,3,false,false},
-    {71,1,false,false}, {72,2,false,false}, {74,63,true,false},
-    {76,31,true,false}, {77,15,true,false}, {79,7,true,false},
-    {81,3,true,false}, {83,1,true,false}, {84,2,true,false},
+    {58, 63, SAX_LC | SAX_LBB},             /* Bb3 */
+    {59, 63, SAX_LC | SAX_LB},              /* B3 */
+    {60, 63, SAX_LC},                      /* C4 */
+    {61, 63, SAX_LC | SAX_LCS},             /* Db4 */
+    {62, 63, 0},                           /* D4 */
+    {63, 63, SAX_LEB},                     /* Eb4 */
+    {64, 31, 0},                           /* E4 */
+    {65, 15, 0},                           /* F4 */
+    {66, 23, 0},                           /* F#4 */
+    {67, 7, 0},                            /* G4 */
+    {68, 7, SAX_GS},                       /* Ab4 */
+    {69, 3, 0},                            /* A4 */
+    {70, 3, SAX_SBB},                      /* Bb4 */
+    {71, 1, 0},                            /* B4 */
+    {72, 2, 0},                            /* C5 */
+    {73, 0, 0},                            /* Db5 */
+    {74, 63, SAX_OCT},                     /* D5 */
+    {75, 63, SAX_OCT | SAX_LEB},            /* Eb5 */
+    {76, 31, SAX_OCT},                     /* E5 */
+    {77, 15, SAX_OCT},                     /* F5 */
+    {78, 23, SAX_OCT},                     /* F#5 */
+    {79, 7, SAX_OCT},                      /* G5 */
+    {80, 7, SAX_OCT | SAX_GS},              /* Ab5 */
+    {81, 3, SAX_OCT},                      /* A5 */
+    {82, 3, SAX_OCT | SAX_SBB},             /* Bb5 */
+    {83, 1, SAX_OCT},                      /* B5 */
+    {84, 2, SAX_OCT},                      /* C6 */
+    {85, 0, SAX_OCT},                      /* Db6 */
+    {86, 0, SAX_OCT | SAX_PD},              /* D6 */
+    {87, 0, SAX_OCT | SAX_PD | SAX_PEB},     /* Eb6 */
+    {88, 0, SAX_OCT | SAX_PD | SAX_PEB | SAX_SE}, /* E6 */
+    {89, 0, SAX_OCT | SAX_PD | SAX_PEB | SAX_PF | SAX_SE}, /* F6 */
+    {90, 0, SAX_OCT | SAX_PD | SAX_PEB | SAX_PF | SAX_SE | SAX_HFS}, /* F#6 */
 };
 const sax_note_t *sax_note(size_t i) { return i < SAX_NOTE_COUNT ? &notes[i] : NULL; }
 double sax_frequency(int midi) { return 440.0 * exp2((midi - 69) / 12.0); }
@@ -14,6 +46,19 @@ void sax_note_name(int midi, char *out, size_t size) {
     static const char *names[] = {"C","Db","D","Eb","E","F","F#","G","Ab","A","Bb","B"};
     if (midi < 0 || midi > 127) { snprintf(out, size, "--"); return; }
     snprintf(out, size, "%s%d", names[midi % 12], midi / 12 - 1);
+}
+void sax_note_alias(int midi, char *out, size_t size) {
+    static const char *aliases[] = {"", "C#", "", "D#", "", "", "Gb", "", "G#", "", "A#", ""};
+    if (midi < 0 || midi > 127 || !aliases[midi % 12][0]) {
+        if (size) out[0] = 0;
+        return;
+    }
+    snprintf(out, size, "%s%d", aliases[midi % 12], midi / 12 - 1);
+}
+unsigned sax_tone_richness(double hz) {
+    if (hz <= 311.13) return 256;
+    if (hz >= 440.0) return 0;
+    return (unsigned)((440.0 - hz) * 256.0 / (440.0 - 311.13) + 0.5);
 }
 uint8_t sax_volume_step(uint8_t current, bool louder) {
     int next = (int)current + (louder ? 10 : -10);
@@ -46,10 +91,38 @@ static const int16_t sine_table[257] = {
     -6123, -5758, -5390, -5019, -4645, -4267, -3888, -3506, -3121, -2735, -2348, -1959,
     -1568, -1177, -785, -393, 0,
 };
+/* Harmonic weights 1 : .65 : .45 : .30, sampled over one fundamental period.
+ * Normalize the table to 20000; interpolation and crossfade are convex, so
+ * no hard clipping or per-sample floating-point trigonometry is needed. */
+static const int16_t rich_table[257] = {
+    0, 1313, 2620, 3915, 5191, 6443, 7666, 8854, 10001, 11102, 12154, 13151,
+    14090, 14967, 15779, 16524, 17199, 17802, 18332, 18789, 19172, 19482, 19718, 19882,
+    19975, 20000, 19959, 19854, 19688, 19465, 19189, 18864, 18493, 18081, 17633, 17152,
+    16644, 16114, 15566, 15005, 14435, 13860, 13286, 12716, 12155, 11605, 11070, 10554,
+    10059, 9588, 9143, 8726, 8339, 7982, 7656, 7362, 7100, 6870, 6672, 6503,
+    6364, 6254, 6169, 6109, 6071, 6054, 6054, 6070, 6099, 6139, 6186, 6238,
+    6292, 6346, 6398, 6445, 6485, 6516, 6536, 6543, 6535, 6513, 6473, 6417,
+    6342, 6249, 6137, 6008, 5860, 5695, 5513, 5316, 5105, 4880, 4644, 4397,
+    4143, 3882, 3616, 3348, 3079, 2811, 2547, 2287, 2034, 1790, 1555, 1332,
+    1122, 925, 744, 578, 428, 296, 180, 81, -2, -68, -118, -153,
+    -174, -182, -179, -165, -143, -114, -79, -40, 0, 40, 79, 114,
+    143, 165, 179, 182, 174, 153, 118, 68, 2, -81, -180, -296,
+    -428, -578, -744, -925, -1122, -1332, -1555, -1790, -2034, -2287, -2547, -2811,
+    -3079, -3348, -3616, -3882, -4143, -4397, -4644, -4880, -5105, -5316, -5513, -5695,
+    -5860, -6008, -6137, -6249, -6342, -6417, -6473, -6513, -6535, -6543, -6536, -6516,
+    -6485, -6445, -6398, -6346, -6292, -6238, -6186, -6139, -6099, -6070, -6054, -6054,
+    -6071, -6109, -6169, -6254, -6364, -6503, -6672, -6870, -7100, -7362, -7656, -7982,
+    -8339, -8726, -9143, -9588, -10059, -10554, -11070, -11605, -12155, -12716, -13286, -13860,
+    -14435, -15005, -15566, -16114, -16644, -17152, -17633, -18081, -18493, -18864, -19189, -19465,
+    -19688, -19854, -19959, -20000, -19975, -19882, -19718, -19482, -19172, -18789, -18332, -17802,
+    -17199, -16524, -15779, -14967, -14090, -13151, -12154, -11102, -10001, -8854, -7666, -6443,
+    -5191, -3915, -2620, -1313, 0,
+};
 void sax_tone(int16_t *out, size_t count, double hz, uint32_t *phase,
               size_t offset, size_t total) {
     uint32_t step = (uint32_t)(hz * 4294967296.0 / SAX_SAMPLE_RATE);
     const size_t ramp = SAX_SAMPLE_RATE / 100;
+    const unsigned rich = sax_tone_richness(hz);
     for (size_t i = 0; i < count; ++i) {
         size_t at = offset + i;
         size_t envelope = ramp;
@@ -60,6 +133,11 @@ void sax_tone(int16_t *out, size_t count, double hz, uint32_t *phase,
         int32_t fraction = (*phase >> 8) & 65535;
         int32_t value = sine_table[index] +
             (sine_table[index+1] - sine_table[index]) * fraction / 65536;
+        if (rich) {
+            int32_t colored = rich_table[index] +
+                (rich_table[index+1] - rich_table[index]) * fraction / 65536;
+            value = (value * (int32_t)(256 - rich) + colored * (int32_t)rich) / 256;
+        }
         out[i] = (int16_t)(value * (int32_t)envelope / (int32_t)ramp);
         *phase += step;
     }

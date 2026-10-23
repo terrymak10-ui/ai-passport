@@ -73,6 +73,10 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_sax_music.c main/sax_music.c -lm -o "${test_dir}/test_sax_music"
     "${test_dir}/test_sax_music"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_sax_diagram.c main/sax_diagram.c main/sax_music.c -lm \
+        -o "${test_dir}/test_sax_diagram"
+    "${test_dir}/test_sax_diagram"
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

@@ -15,6 +15,34 @@
 - 添加字库前评估 Flash 与内部 RAM 影响；ESP32-C3 无 PSRAM。
 - 不提交许可不允许分发的字库。
 
+<a id="sax-ui-font"></a>
+### 萨克斯界面字体
+
+`fonts/sax_tc_14.c` 定义 `sax_tc_14`：重命名的 SaxTCUI 子集，字重 500，
+14 px、未压缩 4 bpp、无字偶距、行高 17 px。
+字符表 `fonts/sax_tc_14.txt` 包含可打印 ASCII 及 `main/sax_ui.c`、
+`main/sax_diagram.c` 中全部非 ASCII 字符，目前 131 字符。
+`main/CMakeLists.txt` 仅编译一次，中文控件和自绘提示明确选择该字体。
+这是固定界面子集，不是通用中文字体。
+
+来源：[Noto Sans TC 可变字体](https://github.com/google/fonts/blob/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf)，
+Google Fonts 提交 `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`。
+原字体 SHA-256：`864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f`。
+Copyright 2014–2021 Adobe；[SIL OFL 1.1](fonts/OFL-NotoSansTC.txt)。
+完整 11.9 MB 原字体另行下载，不进入固件；中间子集重命名，避免使用保留字体名称。
+
+使用 Python／fonttools 4.61.1 与 Node／lv_font_conv 1.5.3，从仓库根目录重现：
+
+```sh
+python3 tools/generate_sax_font.py --source /path/to/NotoSansTC.ttf --converter /path/to/lv_font_conv
+```
+
+脚本核对原字体哈希及字符映射，提取子集并实例化字重 500，再调用
+`--size 14 --bpp 4 --format lvgl --no-compress --no-kerning`。
+中文文案变更后重新生成，并执行[应用指南](../docs/applications/eb-sax.zh_CN.md#字体与主机预览)的覆盖及渲染检查。
+生成的 C 文本约 59 KB，编译后的字形常量位于 Flash，不是 59 KB RAM 分配。
+应检查实际 ELF／map 和板上 heap，不能把源码字节数当成固件或运行成本。
+
 ## 图片（images）
 
 可复用的源图与生成的显示资产放在 `images/`。
@@ -30,6 +58,21 @@
 - 优先采用适合 240 × 320 RGB565 显示的格式，并纳入 Flash 与内部 RAM 考量。
 - 许可允许时保留可编辑源文件，并记录来源与许可。
 - 图片中不得包含设备二维码秘密、凭证或个人数据。
+
+<a id="sax-ui-previews"></a>
+### 萨克斯界面预览
+
+`images/sax-fingering-C4.png`、`images/sax-fingering-C5.png`、
+`images/sax-fingering-Fs6.png` 是 240 x 320 RGB PNG 预览，由实际 LVGL UI 的
+`tests/sax_ui_host` 生成（命令见应用指南）。用 Pillow 的
+`Image.open(ppm).save(png)` 转换 PPM，不缩放。
+它们仅用于文档，不作为固件位图，也不是设备实拍。可编辑源为
+`main/sax_ui.c`／`main/sax_diagram.c`，原创示意图采用仓库许可，不复制 Yamaha 海报。
+字体部分遵循上述 OFL。仍需在实机检查圆角裁切和字体可读性。
+
+![模拟 C4 指法](images/sax-fingering-C4.png)
+![模拟 C5 指法](images/sax-fingering-C5.png)
+![模拟 F#6 指法](images/sax-fingering-Fs6.png)
 
 ## 音乐与音效（music）
 

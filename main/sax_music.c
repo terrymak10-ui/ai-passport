@@ -64,3 +64,26 @@ void sax_tone(int16_t *out, size_t count, double hz, uint32_t *phase,
         *phase += step;
     }
 }
+
+sax_player_action_t sax_player_toggle(sax_player_state_t *state) {
+    if (*state == SAX_STOPPED) {
+        *state = SAX_PLAYING;
+        return SAX_PLAYER_START;
+    }
+    if (*state == SAX_PLAYING) {
+        *state = SAX_STOPPING;
+        return SAX_PLAYER_STOP;
+    }
+    return SAX_PLAYER_NONE;
+}
+void sax_player_complete(sax_player_state_t *state) { *state = SAX_STOPPED; }
+void sax_stream_render(sax_stream_t *stream, int16_t *out, size_t count, double hz) {
+    /* Saturate the envelope position after attack; no multi-day sample overflow. */
+    sax_tone(out, count, hz, &stream->phase, stream->attack_samples, SIZE_MAX);
+    size_t remaining = SAX_RELEASE_SAMPLES - stream->attack_samples;
+    stream->attack_samples += count < remaining ? count : remaining;
+}
+void sax_stream_release(sax_stream_t *stream, int16_t *out, double hz) {
+    sax_tone(out, SAX_RELEASE_SAMPLES, hz, &stream->phase,
+             SAX_RELEASE_SAMPLES, 2 * SAX_RELEASE_SAMPLES);
+}

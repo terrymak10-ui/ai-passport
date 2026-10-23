@@ -43,5 +43,32 @@ int main(void) {
     assert(peak >= 15900 && peak <= 16000);
     double rms = sqrt(energy / 16000);
     assert(rms > 11000 && rms < 11500); /* sine energy including fades */
+    sax_player_state_t player = SAX_STOPPED;
+    assert(sax_player_toggle(&player) == SAX_PLAYER_START && player == SAX_PLAYING);
+    assert(sax_player_toggle(&player) == SAX_PLAYER_STOP && player == SAX_STOPPING);
+    assert(sax_player_toggle(&player) == SAX_PLAYER_NONE && player == SAX_STOPPING);
+    sax_player_complete(&player);
+    assert(player == SAX_STOPPED);
+    assert(sax_player_toggle(&player) == SAX_PLAYER_START);
+    sax_player_complete(&player); /* playback error also permits retry */
+    assert(player == SAX_STOPPED);
+    /* Stream crosses the old one-second limit without fading or phase reset. */
+    sax_stream_t whole = {0}, chunks = {0};
+    int16_t continuous[16384], blocked[16384], release[SAX_RELEASE_SAMPLES];
+    sax_stream_render(&whole, continuous, 16384, 311.1269837);
+    for (size_t at = 0; at < 16384; at += 256)
+        sax_stream_render(&chunks, blocked + at, 256, 311.1269837);
+    assert(memcmp(continuous, blocked, sizeof(continuous)) == 0);
+    assert(continuous[0] == 0 && whole.attack_samples == SAX_RELEASE_SAMPLES);
+    double tail_energy = 0;
+    for (int i = 16000; i < 16384; ++i) {
+        assert(abs(continuous[i]) <= SAX_TONE_PEAK);
+        tail_energy += (double)continuous[i] * continuous[i];
+    }
+    assert(sqrt(tail_energy / 384) > 10000);
+    sax_stream_release(&chunks, release, 311.1269837);
+    assert(release[SAX_RELEASE_SAMPLES-1] == 0);
+    for (int i = 0; i < SAX_RELEASE_SAMPLES; ++i)
+        assert(abs(release[i]) <= SAX_TONE_PEAK);
     puts("Sax music tests: PASS");
 }

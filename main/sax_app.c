@@ -21,7 +21,8 @@ static lv_obj_t *keys[6], *octave_key, *low_key, *battery_label;
 static bool audio_ok, concert;
 static size_t selected;
 static unsigned generation;
-static bool playing;
+static sax_player_state_t player = SAX_STOPPED;
+static TaskHandle_t audio_task;
 static uint8_t volume = SAX_VOLUME_DEFAULT;
 static int64_t last_activity;
 static bool dimmed;
@@ -67,7 +68,7 @@ static void refresh(void) {
     fill(low_key, n->low_c);
     if (!audio_ok) lv_label_set_text(status_label, "Audio unavailable");
     else lv_label_set_text_fmt(status_label, "%s | VOL %u",
-                               playing ? "Playing..." : "OK: play", (unsigned)volume);
+                               player == SAX_STOPPING ? "Stopping..." : player == SAX_PLAYING ? "OK: stop" : "OK: play", (unsigned)volume);
 }
 static void build_ui(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
@@ -93,7 +94,7 @@ static void build_ui(void) {
     label(screen, "Oct", 190, 184, 35);
     label(screen, "C", 201, 230, 20);
     status_label = label(screen, "", 18, 254, 210);
-    label(screen, "UP/DOWN: note | OK: play\nHold: UP/DN vol, OK mode", 18, 279, 210);
+    label(screen, "UP/DOWN: note, OK: sound\nHold: UP/DN vol, OK mode", 18, 279, 210);
     lv_screen_load(screen);
     refresh();
 }
@@ -113,12 +114,22 @@ static void audio_worker(void *arg) {
         ESP_LOGI(TAG, "Reference start midi=%d hz=%.2f volume=%u peak=%d format_ok=%d",
                  request.midi, sax_frequency(request.midi), (unsigned)request.volume,
                  SAX_TONE_PEAK, ok);
-        uint32_t phase = 0;
-        size_t total = SAX_SAMPLE_RATE; /* one second, fixed shared format */
-        for (size_t at = 0; ok && at < total; at += 256) {
-            size_t count = total - at < 256 ? total - at : 256;
-            sax_tone(pcm, count, sax_frequency(request.midi), &phase, at, total);
-            ok = bsp_audio_write(pcm, count * sizeof(*pcm)) == ESP_OK;
+        sax_stream_t stream = {0};
+        bool started = false;
+        const double hz = sax_frequency(request.midi);
+        /* Only this worker owns PCM. Notification is an out-of-band stop request,
+         * including when OK is pressed before the start queue is consumed. */
+        while (ok) {
+            uint32_t stop_generation = 0;
+            if (xTaskNotifyWait(0, UINT32_MAX, &stop_generation, 0) == pdTRUE &&
+                stop_generation == request.generation) break;
+            sax_stream_render(&stream, pcm, 256, hz);
+            ok = bsp_audio_write(pcm, sizeof(pcm)) == ESP_OK;
+            started = true;
+        }
+        if (ok && started) {
+            sax_stream_release(&stream, pcm, hz);
+            ok = bsp_audio_write(pcm, SAX_RELEASE_SAMPLES * sizeof(*pcm)) == ESP_OK;
         }
         /* Drain old PCM before publishing completion. No UI access here. */
         if (ok) {
@@ -126,6 +137,8 @@ static void audio_worker(void *arg) {
             for (int i = 0; ok && i < 6; ++i) ok = bsp_audio_write(pcm, sizeof(pcm)) == ESP_OK;
         }
         ESP_LOGI(TAG, "Reference completed: pcm_ok=%d (speaker output unverified)", ok);
+        /* Generation-tagged stops cannot cancel a later playback if an error
+         * races with an OK press immediately before this acknowledgement. */
         const tone_result_t result = {request.generation, ok};
         xQueueOverwrite(results, &result);
     }
@@ -137,7 +150,7 @@ void app_main(void) {
     if (!inputs || !tones || !results) { ESP_LOGE(TAG, "queue allocation failed"); return; }
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) return;
     audio_ok = bsp_audio_init() == ESP_OK;
-    if (audio_ok && xTaskCreate(audio_worker, "sax_audio", 4096, NULL, 4, NULL) != pdPASS) audio_ok = false;
+    if (audio_ok && xTaskCreate(audio_worker, "sax_audio", 4096, NULL, 4, &audio_task) != pdPASS) audio_ok = false;
     bool battery_ok = bsp_battery_init() == ESP_OK;
     if (!bsp_lvgl_lock(1000)) return;
     build_ui();
@@ -151,14 +164,18 @@ void app_main(void) {
         if (xQueueReceive(inputs, &input, pdMS_TO_TICKS(50)) == pdTRUE) {
             last_activity = esp_timer_get_time();
             if (dimmed) { dimmed = false; bsp_display_backlight(65); }
-            if (!playing) {
+            if (audio_ok && input.key == BSP_BTN_OK &&
+                (input.event == BSP_BTN_CLICK || input.event == BSP_BTN_DOUBLE)) {
+                sax_player_action_t action = sax_player_toggle(&player);
+                if (action == SAX_PLAYER_START) {
+                    tone_request_t r = {sax_note(selected)->written - 9, ++generation, volume};
+                    if (xQueueSend(tones, &r, 0) != pdTRUE) sax_player_complete(&player);
+                } else if (action == SAX_PLAYER_STOP) xTaskNotify(audio_task, generation, eSetValueWithOverwrite);
+                if (bsp_lvgl_lock(100)) { refresh(); bsp_lvgl_unlock(); }
+            } else if (player == SAX_STOPPED) {
                 if (input.event == BSP_BTN_CLICK || input.event == BSP_BTN_DOUBLE) {
                     if (input.key == BSP_BTN_UP && selected > 0) --selected;
                     else if (input.key == BSP_BTN_DOWN && selected + 1 < SAX_NOTE_COUNT) ++selected;
-                    else if (input.key == BSP_BTN_OK && audio_ok) {
-                        tone_request_t r = {sax_note(selected)->written - 9, ++generation, volume};
-                        playing = xQueueSend(tones, &r, 0) == pdTRUE;
-                    }
                 } else if (input.event == BSP_BTN_LONG) {
                     if (input.key == BSP_BTN_OK) concert = !concert;
                     else if (input.key == BSP_BTN_UP) volume = sax_volume_step(volume, true);
@@ -169,7 +186,7 @@ void app_main(void) {
         }
         tone_result_t result;
         if (xQueueReceive(results, &result, 0) == pdTRUE && result.generation == generation) {
-            playing = false;
+            sax_player_complete(&player);
             if (bsp_lvgl_lock(100)) {
                 refresh();
                 if (!result.ok) lv_label_set_text(status_label, "Playback failed. OK: retry");
@@ -188,7 +205,7 @@ void app_main(void) {
                 bsp_lvgl_unlock();
             }
         }
-        if (!dimmed && !playing && now - last_activity > 60000000) {
+        if (!dimmed && player == SAX_STOPPED && now - last_activity > 60000000) {
             bsp_display_backlight(5);
             dimmed = true;
         }

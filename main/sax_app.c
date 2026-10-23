@@ -64,7 +64,7 @@ static void refresh(void) {
     for (int i = 0; i < 6; ++i) fill(keys[i], (n->keys >> i) & 1);
     fill(octave_key, n->octave);
     fill(low_key, n->low_c);
-    lv_label_set_text(status_label, !audio_ok ? "Audio unavailable" : playing ? "Playing reference..." : "OK: hear reference");
+    lv_label_set_text(status_label, !audio_ok ? "Audio unavailable" : playing ? "Playing reference..." : "OK: hear reference (80)");
 }
 static void build_ui(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
@@ -106,7 +106,11 @@ static void audio_worker(void *arg) {
     for (;;) {
         if (xQueueReceive(tones, &request, portMAX_DELAY) != pdTRUE) continue;
         bool ok = bsp_audio_set_format(SAX_SAMPLE_RATE, 16, 1) == ESP_OK;
-        bsp_audio_set_volume(45);
+        /* codec-dev maps 45 to about -27.5 dB before board gain compensation.
+         * Match the BSP demo's 80 setting; keep PCM amplitude and fades bounded. */
+        bsp_audio_set_volume(80);
+        ESP_LOGI(TAG, "Reference start midi=%d hz=%.2f volume=80 format_ok=%d",
+                 request.midi, sax_frequency(request.midi), ok);
         uint32_t phase = 0;
         size_t total = SAX_SAMPLE_RATE; /* one second, fixed shared format */
         for (size_t at = 0; ok && at < total; at += 256) {
@@ -119,6 +123,7 @@ static void audio_worker(void *arg) {
             for (int i = 0; i < 256; ++i) pcm[i] = 0;
             for (int i = 0; ok && i < 6; ++i) ok = bsp_audio_write(pcm, sizeof(pcm)) == ESP_OK;
         }
+        ESP_LOGI(TAG, "Reference completed: pcm_ok=%d (speaker output unverified)", ok);
         const tone_result_t result = {request.generation, ok};
         xQueueOverwrite(results, &result);
     }

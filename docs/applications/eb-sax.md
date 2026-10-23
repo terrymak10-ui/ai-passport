@@ -9,7 +9,7 @@ The hardware BSP and default partitions are unchanged. No radio stack is started
 ## Controls and display
 
 - UP selects the previous lower note; DOWN selects the next higher note. Ends clamp.
-- OK plays a one-second sine reference at 45% output volume. Start quietly and
+- OK plays a one-second sine reference at 80/100 codec volume. Start quietly and
   keep the speaker away from ears. A double click is treated as one action.
 - Hold OK toggles WRITTEN / CONCERT. Written is the startup default.
 - Playback temporarily locks note selection/mode changes, so displayed and played
@@ -70,3 +70,5 @@ appropriate clock source after complete power loss.
 Build outputs must pass the shared merge/layout verifier. Do not flash without
 explicit approval for the exact build; a merged image at 0x0 can reset NVS.
 Source publication on the feature branch is authorized; merging, releases, and device flashing are not.
+
+Audio follow-up: the initial 45/100 codec setting mapped to approximately -27.5 dB before board gain compensation. The test revision uses the baseline audio demo's 80/100 setting (approximately -10 dB), leaving PCM amplitude and fades unchanged. This raises nominal output by 17.5 dB but is not proof of audible hardware output. Serial logs report reference frequency, format setup and PCM completion; successful writes do not prove speaker output. On the initial device build, UI rendering and a completed playback status were observed, but sound was not confirmed. Retest acoustic output with the new revision.
